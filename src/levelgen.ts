@@ -1,6 +1,8 @@
 import { EMPTY, LevelDef, ShooterDef, exposedMask } from './game';
 import { Rng, hashSeed } from './rng';
 import { botPlay } from './solver';
+import { Sprite, Theme } from './themes';
+import { biomeOfLevel } from './world';
 
 /** Vivid, clearly distinguishable block colors. */
 export const COLORS = [
@@ -30,11 +32,11 @@ export interface LevelParams {
 /** Difficulty curve. Grows quickly at first, then plateaus so levels stay playable forever. */
 export function levelParams(level: number): LevelParams {
   const n = Math.max(1, Math.floor(level));
-  const size = Math.min(8 + Math.floor((n - 1) / 2), 24);
+  const size = Math.min(10 + Math.floor((n - 1) / 3), 24);
   return {
     width: size,
     height: size,
-    colors: Math.min(2 + Math.floor((n - 1) / 3), 7),
+    colors: Math.min(3 + Math.floor((n - 1) / 4), 7),
     columns: n < 3 ? 2 : n < 10 ? 3 : 4,
     slots: 5,
     beltCapacity: 5,
@@ -362,6 +364,104 @@ function distribute(seq: ShooterDef[], columns: number, rng: Rng): ShooterDef[][
   return cols.filter((c) => c.length > 0);
 }
 
+// ---------------------------------------------------------------------------------------------
+// Themed images: hand-made pixel-art sprites, scaled up and placed on a patterned background.
+// ---------------------------------------------------------------------------------------------
+
+function rgb(hex: string): [number, number, number] {
+  const n = parseInt(hex.slice(1), 16);
+  return [(n >> 16) & 255, (n >> 8) & 255, n & 255];
+}
+
+export function colorDistance(a: string, b: string): number {
+  const [r1, g1, b1] = rgb(a);
+  const [r2, g2, b2] = rgb(b);
+  return Math.hypot(r1 - r2, g1 - g2, b1 - b2);
+}
+
+interface Image {
+  width: number;
+  height: number;
+  grid: Int8Array;
+  palette: string[];
+  title: string;
+}
+
+function spriteImage(sprite: Sprite, theme: Theme, level: number, params: LevelParams, rng: Rng): Image {
+  const sw = sprite.rows[0].length;
+  const sh = sprite.rows.length;
+  const pad = level <= 2 ? 0 : rng.int(0, level < 12 ? 1 : 2);
+  const scale = Math.max(1, (params.width - 2 * pad) / Math.max(sw, sh));
+  const iw = Math.round(sw * scale);
+  const ih = Math.round(sh * scale);
+  const width = iw + 2 * pad;
+  const height = ih + 2 * pad;
+  const mirror = rng.chance(0.4);
+
+  // Sprite colors in a stable order.
+  const chars = Object.keys(sprite.colors);
+  const palette = chars.map((c) => sprite.colors[c]);
+
+  // Background: empty (transparent) on easy levels, otherwise 1-2 theme colors in a pattern.
+  const empty = level <= 3 || rng.chance(level < 15 ? 0.25 : 0.12);
+  const candidates = rng
+    .shuffle([...theme.backgrounds])
+    .filter((c) => palette.every((p) => colorDistance(p, c) >= 70));
+  const maxBg = Math.min(level < 8 ? 1 : 2, 7 - palette.length, candidates.length);
+  const bgCount = empty ? 0 : Math.max(0, Math.min(maxBg, rng.int(1, 2)));
+  const bg = candidates.slice(0, bgCount).map((c) => palette.push(c) - 1);
+  const pattern = rng.int(0, 3);
+  const period = rng.int(2, 4);
+
+  const grid = new Int8Array(width * height).fill(EMPTY);
+  for (let y = 0; y < height; y++) {
+    for (let x = 0; x < width; x++) {
+      let c = EMPTY;
+      const sx = Math.floor((x - pad) / scale);
+      const sy = Math.floor((y - pad) / scale);
+      if (x >= pad && y >= pad && sx < sw && sy < sh && x - pad < iw && y - pad < ih) {
+        const ch = sprite.rows[sy][mirror ? sw - 1 - sx : sx];
+        if (ch !== '.') c = chars.indexOf(ch);
+      }
+      if (c === EMPTY && bg.length > 0) {
+        let v = 0;
+        if (bg.length > 1) {
+          if (pattern === 0) v = Math.floor(y / period);
+          else if (pattern === 1) v = Math.floor((x + y) / period);
+          else if (pattern === 2) v = Math.floor(x / period) + Math.floor(y / period);
+          else v = Math.floor(Math.max(Math.abs(x - width / 2), Math.abs(y - height / 2)) / period);
+        }
+        c = bg[v % bg.length];
+      }
+      grid[y * width + x] = c;
+    }
+  }
+  const { grid: compacted, used } = compact(grid, palette.length);
+  return { width, height, grid: compacted, palette: used.map((i) => palette[i]), title: sprite.name };
+}
+
+function abstractImage(params: LevelParams, rng: Rng): Image {
+  const width = params.width;
+  const height = Math.max(6, params.height - rng.int(0, 2));
+  const { grid, colors } = generateImage(width, height, params.colors, rng);
+  const palette = rng.shuffle([...COLORS]).slice(0, colors);
+  return { width, height, grid, palette, title: 'Kunstwerk' };
+}
+
+/** Which sprite a level of a biome shows: walks through a shuffled list so motifs rarely repeat. */
+function pickSprite(theme: Theme, level: number): Sprite {
+  const b = biomeOfLevel(level);
+  const order = new Rng(hashSeed(b.index, 0x5b17e)).shuffle(theme.sprites.map((_, i) => i));
+  return theme.sprites[order[(level - b.firstLevel) % order.length]];
+}
+
+function makeImage(level: number, params: LevelParams, rng: Rng, attempt: number): Image {
+  const theme = biomeOfLevel(level).theme;
+  if (theme.sprites.length === 0) return abstractImage(params, rng);
+  const sprite = attempt === 0 ? pickSprite(theme, level) : rng.pick(theme.sprites);
+  return spriteImage(sprite, theme, level, params, rng);
+}
+
 const cache = new Map<number, LevelDef>();
 
 /** Deterministically generates level `level` (1-based). Levels count up forever. */
@@ -373,16 +473,15 @@ export function generateLevel(level: number): LevelDef {
 
   let fallback: LevelDef | null = null;
   for (let attempt = 0; attempt < 4; attempt++) {
-    const width = params.width;
-    const height = Math.max(6, params.height - rng.int(0, 2));
-    const { grid, colors } = generateImage(width, height, params.colors, rng);
-    const palette = rng.shuffle([...COLORS]).slice(0, colors);
+    const { width, height, grid, palette, title } = makeImage(level, params, rng, attempt);
+    const colors = palette.length;
     const seq = peelSequence(grid, width, height, colors, rng);
 
     for (let arrangement = 0; arrangement < 4; arrangement++) {
       const shuffle = params.shuffle * (1 - arrangement / 4);
       const def: LevelDef = {
         level,
+        title,
         width,
         height,
         palette,

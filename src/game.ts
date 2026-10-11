@@ -25,6 +25,8 @@ export interface ShooterDef {
 
 export interface LevelDef {
   level: number;
+  /** What the picture shows, e.g. "Katze". */
+  title?: string;
   width: number;
   height: number;
   palette: string[];

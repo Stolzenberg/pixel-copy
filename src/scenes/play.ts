@@ -1,33 +1,27 @@
-import { Sfx } from './audio';
-import { EMPTY, Facing, Game, GameEvent, Shooter } from './game';
-import { generateLevel } from './levelgen';
+import { EMPTY, Facing, Game, GameEvent, Shooter } from '../game';
+import type { Host, Scene } from '../host';
+import { generateLevel } from '../levelgen';
+import { completeLevel } from '../progress';
+import { Biome, biomeOfLevel } from '../world';
+import { FONT, Rect, drawButton, inside, roundRect, shade, storageGet, storageSet } from '../util';
 
 /** Milliseconds per simulation step at normal speed. */
 const TICK_MS = 70;
-const STORAGE_LEVEL = 'pixelflow:level';
-const STORAGE_MUTED = 'pixelflow:muted';
 const STORAGE_FAST = 'pixelflow:fast';
 
 const THEME = {
-  bgTop: '#1d2140',
-  bgBottom: '#121429',
   panel: '#262b52',
   panelLight: '#323867',
+  board: '#454d80',
   belt: '#0d0f22',
   beltLine: '#3b4277',
   text: '#f5f6ff',
-  textDim: '#9aa0d0',
+  textDim: '#aab0dd',
   accent: '#ffd93d',
   danger: '#ff4d5e',
   good: '#5bd75b',
+  dark: '#121429',
 };
-
-interface Rect {
-  x: number;
-  y: number;
-  w: number;
-  h: number;
-}
 
 interface Layout {
   width: number;
@@ -47,7 +41,7 @@ interface Layout {
   queueRows: number;
   queueStep: number;
   hud: Rect;
-  buttons: { speed: Rect; sound: Rect; restart: Rect };
+  buttons: { map: Rect; speed: Rect; sound: Rect; restart: Rect };
 }
 
 interface Visual {
@@ -93,50 +87,6 @@ interface Ring {
 
 type Overlay = { kind: 'won' | 'lost'; at: number } | null;
 
-function storageGet(key: string): string | null {
-  try {
-    return localStorage.getItem(key);
-  } catch {
-    return null;
-  }
-}
-
-function storageSet(key: string, value: string): void {
-  try {
-    localStorage.setItem(key, value);
-  } catch {
-    /* storage unavailable (private mode etc.) – progress simply isn't kept */
-  }
-}
-
-function shade(hex: string, amount: number): string {
-  const n = parseInt(hex.slice(1), 16);
-  let r = (n >> 16) & 255;
-  let g = (n >> 8) & 255;
-  let b = n & 255;
-  const target = amount < 0 ? 0 : 255;
-  const t = Math.abs(amount);
-  r = Math.round(r + (target - r) * t);
-  g = Math.round(g + (target - g) * t);
-  b = Math.round(b + (target - b) * t);
-  return `rgb(${r},${g},${b})`;
-}
-
-function inside(r: Rect, x: number, y: number): boolean {
-  return x >= r.x && x <= r.x + r.w && y >= r.y && y <= r.y + r.h;
-}
-
-function roundRect(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: number): void {
-  const rr = Math.max(0, Math.min(r, w / 2, h / 2));
-  ctx.beginPath();
-  ctx.moveTo(x + rr, y);
-  ctx.arcTo(x + w, y, x + w, y + h, rr);
-  ctx.arcTo(x + w, y + h, x, y + h, rr);
-  ctx.arcTo(x, y + h, x, y, rr);
-  ctx.arcTo(x, y, x + w, y, rr);
-  ctx.closePath();
-}
-
 const FACING_ANGLE: Record<Facing, number> = {
   [Facing.None]: 0,
   [Facing.Up]: -Math.PI / 2,
@@ -145,48 +95,39 @@ const FACING_ANGLE: Record<Facing, number> = {
   [Facing.Right]: 0,
 };
 
-export class App {
-  private readonly canvas: HTMLCanvasElement;
+export class PlayScene implements Scene {
+  private readonly host: Host;
   private readonly ctx: CanvasRenderingContext2D;
-  private readonly sfx = new Sfx();
   private game!: Game;
-  private level = 1;
+  private level: number;
+  private biome: Biome;
   private layout!: Layout;
-  private dpr = 1;
   private visuals = new Map<number, Visual>();
   private projectiles: Projectile[] = [];
   private dying: Dying[] = [];
   private particles: Particle[] = [];
   private rings: Ring[] = [];
   private overlay: Overlay = null;
-  private overlayButton: Rect | null = null;
+  private overlayButtons: { rect: Rect; action: () => void }[] = [];
   private acc = 0;
-  private last = 0;
   private now = 0;
   private fast = false;
   private levelStart = 0;
   private launches = 0;
   private toast: { text: string; at: number } | null = null;
 
-  constructor(canvas: HTMLCanvasElement) {
-    this.canvas = canvas;
-    const ctx = canvas.getContext('2d');
-    if (!ctx) throw new Error('Canvas 2D wird nicht unterstützt');
-    this.ctx = ctx;
-
-    const fromUrl = Number(new URLSearchParams(location.search).get('level'));
-    const saved = Number(storageGet(STORAGE_LEVEL));
-    this.level = Number.isFinite(fromUrl) && fromUrl >= 1 ? Math.floor(fromUrl) : saved >= 1 ? Math.floor(saved) : 1;
-    this.sfx.muted = storageGet(STORAGE_MUTED) === '1';
+  constructor(host: Host, level: number) {
+    this.host = host;
+    this.ctx = host.ctx;
+    this.level = level;
+    this.biome = biomeOfLevel(level);
     this.fast = storageGet(STORAGE_FAST) === '1';
-
-    window.addEventListener('resize', () => this.resize());
-    canvas.addEventListener('pointerdown', (e) => this.onPointer(e));
-    window.addEventListener('keydown', (e) => this.onKey(e));
-
-    this.startLevel(this.level);
+    this.startLevel(level);
     this.resize();
-    requestAnimationFrame((t) => this.frame(t));
+  }
+
+  private get sfx() {
+    return this.host.sfx;
   }
 
   // -------------------------------------------------------------------------------------------
@@ -195,7 +136,7 @@ export class App {
 
   private startLevel(level: number): void {
     this.level = level;
-    storageSet(STORAGE_LEVEL, String(level));
+    this.biome = biomeOfLevel(level);
     this.game = new Game(generateLevel(level));
     this.visuals.clear();
     this.projectiles = [];
@@ -203,15 +144,11 @@ export class App {
     this.particles = [];
     this.rings = [];
     this.overlay = null;
-    this.overlayButton = null;
+    this.overlayButtons = [];
     this.acc = 0;
     this.launches = 0;
     this.levelStart = performance.now();
     if (this.layout) this.layout = this.computeLayout();
-  }
-
-  private nextLevel(): void {
-    this.startLevel(this.level + 1);
   }
 
   private restart(): void {
@@ -222,20 +159,13 @@ export class App {
   // Layout
   // -------------------------------------------------------------------------------------------
 
-  private resize(): void {
-    this.dpr = Math.min(window.devicePixelRatio || 1, 3);
-    const w = window.innerWidth;
-    const h = window.innerHeight;
-    this.canvas.width = Math.round(w * this.dpr);
-    this.canvas.height = Math.round(h * this.dpr);
-    this.canvas.style.width = `${w}px`;
-    this.canvas.style.height = `${h}px`;
+  resize(): void {
     this.layout = this.computeLayout();
   }
 
   private computeLayout(): Layout {
-    const W = window.innerWidth;
-    const H = window.innerHeight;
+    const W = this.host.width;
+    const H = this.host.height;
     const g = this.game;
     const pad = 14;
     const hudH = 56;
@@ -326,6 +256,7 @@ export class App {
         restart: { x: right - bs, y: by, w: bs, h: bs },
         sound: { x: right - bs * 2 - 8, y: by, w: bs, h: bs },
         speed: { x: right - bs * 3 - 16, y: by, w: bs, h: bs },
+        map: { x: x0 + pad, y: by, w: bs, h: bs },
       },
     };
   }
@@ -401,19 +332,16 @@ export class App {
   // Input
   // -------------------------------------------------------------------------------------------
 
-  private onPointer(e: PointerEvent): void {
-    e.preventDefault();
-    this.sfx.unlock();
-    const x = e.clientX;
-    const y = e.clientY;
+  pointerDown(x: number, y: number): void {
     const L = this.layout;
-
     if (this.overlay) {
-      if (this.overlayButton && this.now >= this.overlay.at && inside(this.overlayButton, x, y)) this.confirmOverlay();
+      if (this.now < this.overlay.at) return;
+      for (const b of this.overlayButtons) if (inside(b.rect, x, y)) return b.action();
       return;
     }
+    if (inside(L.buttons.map, x, y)) return this.host.showMap();
     if (inside(L.buttons.restart, x, y)) return this.restart();
-    if (inside(L.buttons.sound, x, y)) return this.toggleSound();
+    if (inside(L.buttons.sound, x, y)) return this.host.toggleSound();
     if (inside(L.buttons.speed, x, y)) return this.toggleSpeed();
 
     for (let i = 0; i < L.slots.length; i++) {
@@ -424,28 +352,17 @@ export class App {
     }
   }
 
-  private onKey(e: KeyboardEvent): void {
-    this.sfx.unlock();
+  key(e: KeyboardEvent): void {
     if (this.overlay) {
-      if ((e.key === 'Enter' || e.key === ' ') && this.now >= this.overlay.at) this.confirmOverlay();
+      if ((e.key === 'Enter' || e.key === ' ') && this.now >= this.overlay.at) this.overlayButtons[0]?.action();
+      else if (e.key === 'Escape') this.host.showMap();
       return;
     }
+    if (e.key === 'Escape') return this.host.showMap();
     const n = Number(e.key);
     if (n >= 1 && n <= 9 && n <= this.game.queues.length) this.tapColumn(n - 1);
     else if (e.key === 'r' || e.key === 'R') this.restart();
-    else if (e.key === 'm' || e.key === 'M') this.toggleSound();
     else if (e.key === 'f' || e.key === 'F') this.toggleSpeed();
-  }
-
-  private confirmOverlay(): void {
-    if (!this.overlay) return;
-    if (this.overlay.kind === 'won') this.nextLevel();
-    else this.restart();
-  }
-
-  private toggleSound(): void {
-    this.sfx.muted = !this.sfx.muted;
-    storageSet(STORAGE_MUTED, this.sfx.muted ? '1' : '0');
   }
 
   private toggleSpeed(): void {
@@ -483,10 +400,8 @@ export class App {
   // Simulation + events
   // -------------------------------------------------------------------------------------------
 
-  private frame(t: number): void {
-    const dt = Math.min(t - (this.last || t), 100);
-    this.last = t;
-    this.now = performance.now();
+  frame(dt: number): void {
+    this.now = this.host.now;
 
     if (this.game.status === 'playing') {
       const tickMs = this.fast ? TICK_MS / 2 : TICK_MS;
@@ -509,7 +424,6 @@ export class App {
 
     this.update(dt);
     this.draw();
-    requestAnimationFrame((tt) => this.frame(tt));
   }
 
   private handleEvents(events: GameEvent[]): void {
@@ -541,7 +455,7 @@ export class App {
           this.sfx.park();
           break;
         case 'won':
-          storageSet(STORAGE_LEVEL, String(this.level + 1));
+          completeLevel(this.level);
           this.overlay = { kind: 'won', at: this.now + 900 };
           setTimeout(() => this.sfx.win(), 450);
           break;
@@ -624,11 +538,9 @@ export class App {
 
   private draw(): void {
     const { ctx, layout: L } = this;
-    ctx.setTransform(this.dpr, 0, 0, this.dpr, 0, 0);
-
     const bg = ctx.createLinearGradient(0, 0, 0, L.height);
-    bg.addColorStop(0, THEME.bgTop);
-    bg.addColorStop(1, THEME.bgBottom);
+    bg.addColorStop(0, this.biome.theme.sky[0]);
+    bg.addColorStop(1, this.biome.theme.sky[1]);
     ctx.fillStyle = bg;
     ctx.fillRect(0, 0, L.width, L.height);
 
@@ -638,7 +550,7 @@ export class App {
     this.drawProjectiles();
     this.drawBeltShooters();
     this.drawEffects();
-    this.drawCapacity();
+    if (!(this.level === 1 && this.launches === 0)) this.drawCapacity();
     this.drawSlots();
     this.drawQueues();
     this.drawHints();
@@ -648,18 +560,23 @@ export class App {
   private drawHud(): void {
     const { ctx, layout: L, game } = this;
     const h = L.hud;
+    const left = L.buttons.map.x + L.buttons.map.w + 10;
     ctx.textBaseline = 'middle';
     ctx.textAlign = 'left';
     ctx.fillStyle = THEME.text;
-    ctx.font = '800 22px system-ui, -apple-system, "Segoe UI", sans-serif';
-    ctx.fillText(`Level ${this.level}`, h.x, h.h / 2);
-    const labelW = ctx.measureText(`Level ${this.level}`).width;
+    ctx.font = `800 20px ${FONT}`;
+    ctx.fillText(`Level ${this.level}`, left, h.h / 2 - 7);
+    ctx.fillStyle = THEME.textDim;
+    ctx.font = `600 11px ${FONT}`;
+    ctx.fillText(`${this.biome.theme.icon} ${this.biome.name}`, left, h.h / 2 + 12);
+    ctx.font = `800 20px ${FONT}`;
+    const labelW = Math.max(ctx.measureText(`Level ${this.level}`).width, 70);
 
     // Progress bar.
-    const bx = h.x + labelW + 16;
+    const bx = left + labelW + 14;
     const bw = L.buttons.speed.x - 14 - bx;
     if (bw > 40) {
-      const by = h.h / 2 - 6;
+      const by = h.h / 2 - 9;
       ctx.fillStyle = THEME.panel;
       roundRect(ctx, bx, by, bw, 12, 6);
       ctx.fill();
@@ -670,26 +587,15 @@ export class App {
         ctx.fill();
       }
       ctx.fillStyle = THEME.textDim;
-      ctx.font = '600 11px system-ui, sans-serif';
+      ctx.font = `600 11px ${FONT}`;
       ctx.textAlign = 'center';
       ctx.fillText(`${game.remaining} Pixel übrig`, bx + bw / 2, by + 24);
     }
 
-    this.drawButton(L.buttons.speed, this.fast ? '»' : '›', this.fast);
-    this.drawButton(L.buttons.sound, this.sfx.muted ? '×' : '♪', false);
-    this.drawButton(L.buttons.restart, '↻', false);
-  }
-
-  private drawButton(r: Rect, label: string, active: boolean): void {
-    const { ctx } = this;
-    ctx.fillStyle = active ? THEME.accent : THEME.panel;
-    roundRect(ctx, r.x, r.y, r.w, r.h, 12);
-    ctx.fill();
-    ctx.fillStyle = active ? THEME.bgBottom : THEME.text;
-    ctx.font = '700 20px system-ui, sans-serif';
-    ctx.textAlign = 'center';
-    ctx.textBaseline = 'middle';
-    ctx.fillText(label, r.x + r.w / 2, r.y + r.h / 2 + 1);
+    drawButton(ctx, L.buttons.map, '◀', false, THEME.panel);
+    drawButton(ctx, L.buttons.speed, this.fast ? '»' : '›', this.fast, THEME.panel);
+    drawButton(ctx, L.buttons.sound, this.sfx.muted ? '×' : '♪', false, THEME.panel);
+    drawButton(ctx, L.buttons.restart, '↻', false, THEME.panel);
   }
 
   private drawBelt(): void {
@@ -736,7 +642,7 @@ export class App {
     const { ctx, layout: L, game } = this;
     const cs = L.cell;
     const palette = game.def.palette;
-    ctx.fillStyle = THEME.panel;
+    ctx.fillStyle = THEME.board;
     roundRect(ctx, L.boardX - 4, L.boardY - 4, cs * game.width + 8, cs * game.height + 8, 8);
     ctx.fill();
 
@@ -851,7 +757,7 @@ export class App {
     ctx.fill();
 
     const fs = Math.max(9, size * (ammo >= 100 ? 0.36 : 0.46));
-    ctx.font = `900 ${fs}px system-ui, -apple-system, "Segoe UI", sans-serif`;
+    ctx.font = `900 ${fs}px ${FONT}`;
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     ctx.lineJoin = 'round';
@@ -891,7 +797,7 @@ export class App {
     const dot = 10;
     const gap = 6;
     const label = 'Band';
-    ctx.font = '700 13px system-ui, sans-serif';
+    ctx.font = `700 13px ${FONT}`;
     const lw = ctx.measureText(label).width + 10;
     const total = lw + cap * dot + (cap - 1) * gap;
     let x = r.x + (r.w - total) / 2;
@@ -946,7 +852,7 @@ export class App {
       if (q.length > L.queueRows) {
         const p = this.queuePoint(c, L.queueRows);
         ctx.fillStyle = THEME.textDim;
-        ctx.font = '700 13px system-ui, sans-serif';
+        ctx.font = `700 13px ${FONT}`;
         ctx.textAlign = 'center';
         ctx.textBaseline = 'middle';
         ctx.fillText(`+${q.length - L.queueRows}`, p.x, p.y - S * 0.25);
@@ -958,15 +864,12 @@ export class App {
     const { ctx, layout: L } = this;
     const pulse = 0.6 + 0.4 * Math.sin(this.now / 250);
     if (this.level === 1 && this.launches === 0 && !this.overlay) {
-      const col = L.columns[0];
       ctx.fillStyle = THEME.accent;
       ctx.globalAlpha = pulse;
-      ctx.font = '700 15px system-ui, sans-serif';
+      ctx.font = `700 15px ${FONT}`;
       ctx.textAlign = 'center';
-      ctx.textBaseline = 'bottom';
-      const msg = 'Tippe auf einen Shooter!';
-      const x = Math.min(Math.max(col.x + col.w, ctx.measureText(msg).width / 2 + 10), L.width - ctx.measureText(msg).width / 2 - 10);
-      ctx.fillText(msg, x, L.slots[0].y - 22);
+      ctx.textBaseline = 'middle';
+      ctx.fillText('Tippe auf einen Shooter!', L.capacity.x + L.capacity.w / 2, L.capacity.y + L.capacity.h / 2);
       ctx.globalAlpha = 1;
     }
     const sinceStart = this.now - this.levelStart;
@@ -979,7 +882,7 @@ export class App {
       roundRect(ctx, cx - 110, cy - 34, 220, 68, 18);
       ctx.fill();
       ctx.fillStyle = THEME.text;
-      ctx.font = '900 32px system-ui, sans-serif';
+      ctx.font = `900 32px ${FONT}`;
       ctx.textAlign = 'center';
       ctx.textBaseline = 'middle';
       ctx.fillText(`Level ${this.level}`, cx, cy + 2);
@@ -991,7 +894,7 @@ export class App {
         this.toast = null;
       } else {
         ctx.globalAlpha = t < 0.8 ? 1 : (1 - t) / 0.2;
-        ctx.font = '700 15px system-ui, sans-serif';
+        ctx.font = `700 15px ${FONT}`;
         const w = ctx.measureText(this.toast.text).width + 28;
         const x = L.width / 2;
         const y = L.boardY + (L.cell * this.game.height) / 2;
@@ -1009,47 +912,55 @@ export class App {
 
   private drawOverlay(): void {
     const o = this.overlay;
-    if (!o || this.now < o.at) {
-      this.overlayButton = null;
-      return;
-    }
+    this.overlayButtons = [];
+    if (!o || this.now < o.at) return;
     const { ctx, layout: L } = this;
     const t = Math.min(1, (this.now - o.at) / 250);
     ctx.globalAlpha = t;
     ctx.fillStyle = 'rgba(8,9,22,0.72)';
     ctx.fillRect(0, 0, L.width, L.height);
 
+    const won = o.kind === 'won';
     const w = Math.min(340, L.width - 40);
-    const h = 230;
+    const h = won ? 220 : 280;
     const x = (L.width - w) / 2;
     const y = (L.height - h) / 2 + (1 - t) * 30;
     ctx.fillStyle = THEME.panel;
     roundRect(ctx, x, y, w, h, 24);
     ctx.fill();
 
-    const won = o.kind === 'won';
     ctx.textAlign = 'center';
     ctx.textBaseline = 'middle';
     ctx.fillStyle = won ? THEME.accent : THEME.danger;
-    ctx.font = '900 30px system-ui, sans-serif';
-    ctx.fillText(won ? 'Geschafft!' : 'Kein Platz mehr!', x + w / 2, y + 52);
+    ctx.font = `900 30px ${FONT}`;
+    ctx.fillText(won ? 'Geschafft!' : 'Kein Platz mehr!', x + w / 2, y + 50);
     ctx.fillStyle = THEME.textDim;
-    ctx.font = '600 15px system-ui, sans-serif';
+    ctx.font = `600 15px ${FONT}`;
+    const title = this.game.def.title;
     ctx.fillText(
-      won ? `Level ${this.level} ist komplett.` : 'Alle Warteplätze waren belegt.',
+      won ? (title ? `„${title}“ ist fertig!` : `Level ${this.level} ist komplett.`) : 'Alle Warteplätze waren belegt.',
       x + w / 2,
-      y + 96,
+      y + 92,
     );
 
-    const bw = w - 64;
-    const btn = { x: x + 32, y: y + h - 86, w: bw, h: 56 };
-    ctx.fillStyle = won ? THEME.good : THEME.accent;
-    roundRect(ctx, btn.x, btn.y, btn.w, btn.h, 18);
-    ctx.fill();
-    ctx.fillStyle = THEME.bgBottom;
-    ctx.font = '900 20px system-ui, sans-serif';
-    ctx.fillText(won ? `Weiter zu Level ${this.level + 1}` : 'Nochmal versuchen', btn.x + btn.w / 2, btn.y + btn.h / 2 + 1);
+    const buttons: { label: string; color: string; action: () => void }[] = won
+      ? [{ label: 'Weiter', color: THEME.good, action: () => this.host.showMap(this.level) }]
+      : [
+          { label: 'Nochmal versuchen', color: THEME.accent, action: () => this.restart() },
+          { label: 'Zur Karte', color: THEME.panelLight, action: () => this.host.showMap() },
+        ];
+    let by = y + 132;
+    for (const b of buttons) {
+      const rect = { x: x + 32, y: by, w: w - 64, h: 52 };
+      ctx.fillStyle = b.color;
+      roundRect(ctx, rect.x, rect.y, rect.w, rect.h, 18);
+      ctx.fill();
+      ctx.fillStyle = b.color === THEME.panelLight ? THEME.text : THEME.dark;
+      ctx.font = `900 19px ${FONT}`;
+      ctx.fillText(b.label, rect.x + rect.w / 2, rect.y + rect.h / 2 + 1);
+      this.overlayButtons.push({ rect, action: b.action });
+      by += 64;
+    }
     ctx.globalAlpha = 1;
-    this.overlayButton = btn;
   }
 }

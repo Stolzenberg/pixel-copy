@@ -11,17 +11,36 @@ Eine Browser-Variante des Mobile Games **Pixel Flow**: Schicke farbige Shooter a
 - Auf dem Band ist nur Platz für eine begrenzte Anzahl Shooter.
 - **Verloren**, wenn ein Shooter seine Runde beendet und kein Warteplatz frei ist. **Gewonnen**, wenn alle Pixel weg sind.
 
-Steuerung: Maus/Touch, oder Tasten `1`–`4` (Spalten), `R` (Neustart), `M` (Ton), `F` (schneller).
+Steuerung: Maus/Touch, oder Tasten `1`–`4` (Spalten), `R` (Neustart), `M` (Ton), `F` (schneller), `Esc` (zur Karte). Auf der Karte: ziehen/scrollen, `Enter` startet das nächste Level.
+
+## Overworld & Biome
+
+Das Spiel startet auf einer Karte: Ein endloser Pfad schlängelt sich nach oben, jedes Level ist ein Checkpoint darauf. Deine Figur steht auf dem nächsten offenen Level. Nach einem Sieg läuft sie zum nächsten Checkpoint. Geschaffte Level lassen sich jederzeit nochmal spielen, und alle 10 Level wartet ein Boss-Checkpoint 👑.
+
+Alle 10 Level beginnt ein neues **Biom** mit eigenem Thema, eigenen Farben, eigener Deko und passenden Motiven (`src/themes.ts`):
+
+| Thema | Beispiele für Motive |
+| --- | --- |
+| 🐾 Tiere | Katze, Frosch, Panda, Fuchs, Hase, Marienkäfer … |
+| 🌻 Pflanzen | Sonnenblume, Kaktus, Fliegenpilz, Tulpe, Kirschen … |
+| 🌸 Anime | Onigiri, Ramen, Torii, Ninja, Schleim, Daruma … |
+| 🌊 Ozean | Clownfisch, Krake, Wal, Krabbe, Qualle … |
+| 🪐 Weltraum | Rakete, Planet, Alien, UFO, Mond … |
+| 🍩 Essen | Apfel, Eis, Donut, Burger, Pizza … |
+| ❄️ Winter | Schneemann, Pinguin, Schneeflocke, Iglu … |
+| 🎨 Kunst | prozedurale Muster (Ringe, Voronoi, Landschaften …) |
+
+Die Biome werden in gemischten Runden ausgeteilt (`src/world.ts`): Jedes Thema kommt einmal dran, bevor sich etwas wiederholt, und zwei Nachbar-Biome haben nie dasselbe Thema. Wiederkehrende Themen bekommen neue Namen, z. B. „Pfotenwiese“, dann „Tierwald“.
 
 ## Level-Generator
 
 `src/levelgen.ts` erzeugt jedes Level deterministisch aus der Levelnummer (gleiche Nummer → gleiches Level):
 
-1. **Bild:** zufällig eines von mehreren Motiven – Ringe, Voronoi-Flächen, Landschaft mit Sonne, symmetrische Sprites, Herz/Blume/Kreis/Raute oder Muster.
+1. **Bild:** Ein Motiv aus dem Thema des Bioms wird auf die Levelgröße skaliert, eventuell gespiegelt und auf einen gemusterten Hintergrund in Themenfarben gesetzt. In frühen Leveln bleibt der Hintergrund leer. Kunst-Biome nutzen prozedurale Muster.
 2. **Shooter:** Das Bild wird virtuell von außen nach innen „abgeschält“. Daraus entsteht eine natürliche Lösungsreihenfolge, die leicht gemischt und auf die Spalten verteilt wird. Die Munition pro Farbe entspricht exakt der Pixelanzahl.
 3. **Lösbarkeit:** Ein Bot (`src/solver.ts`) spielt jedes Level mit derselben Spiellogik durch. Nur Level, die er schafft, werden ausgegeben.
 
-Der Schwierigkeitsgrad steigt mit dem Level (Bildgröße bis 24×24, bis zu 7 Farben, bis zu 4 Spalten, stärker gemischte Reihenfolge) und bleibt dann auf hohem Niveau – es geht unendlich weiter. Der Fortschritt wird im Browser gespeichert; mit `?level=42` lässt sich ein Level direkt öffnen.
+Der Schwierigkeitsgrad steigt mit dem Level (Bildgröße bis 24×24, mehr Hintergrundfarben, bis zu 4 Spalten, stärker gemischte Reihenfolge) und bleibt dann auf hohem Niveau. Der Fortschritt wird im Browser gespeichert; mit `?level=42` lässt sich ein Level direkt öffnen.
 
 ## Tech-Stack
 

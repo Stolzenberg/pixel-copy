@@ -24,9 +24,10 @@ describe('level generation', () => {
   });
 
   it('produces levels the bot can solve, far beyond the difficulty plateau', () => {
-    for (const level of [1, 2, 3, 5, 8, 13, 21, 34, 55, 89, 144, 500, 1234]) {
+    for (let level = 1; level <= 90; level++) {
       expect(botPlay(generateLevel(level)).won, `level ${level}`).toBe(true);
     }
+    for (const level of [144, 500, 1234]) expect(botPlay(generateLevel(level)).won, `level ${level}`).toBe(true);
   });
 
   it('ramps difficulty up and then plateaus', () => {
