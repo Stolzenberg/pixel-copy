@@ -34,4 +34,13 @@ npm test         # Tests (Vitest)
 npm run build    # Produktions-Build nach dist/
 ```
 
-Der Build in `dist/` ist rein statisch (relative Pfade) und läuft auf jedem Webspace, z. B. GitHub Pages.
+Der Build in `dist/` ist rein statisch (relative Pfade) und läuft auf jedem Webspace.
+
+## Deployment (GitHub Pages)
+
+```bash
+npm run deploy   # testet, baut und veröffentlicht dist/ auf dem Branch gh-pages
+```
+
+Einmalig in den Repo-Einstellungen: **Settings → Pages → Source: „Deploy from a branch“, Branch `gh-pages` / `(root)`**.
+Danach ist das Spiel unter https://stolzenberg.github.io/pixel-copy/ erreichbar.
