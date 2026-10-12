@@ -1,6 +1,6 @@
-# Pixel Flow – Browser Edition
+# Nici's Pixel Rush
 
-Eine Browser-Variante des Mobile Games **Pixel Flow**: Schicke farbige Shooter auf das Förderband rund um ein Pixelbild und räume es Block für Block ab. Die Level werden automatisch generiert und zählen unendlich hoch.
+Ein Browser-Spiel nach dem Vorbild des Mobile Games **Pixel Flow**: Schicke farbige Shooter auf das Förderband rund um ein Pixelbild und räume es Block für Block ab. Die Level werden automatisch generiert und zählen unendlich hoch.
 
 ## Spielprinzip
 

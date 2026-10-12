@@ -224,8 +224,12 @@ export class MapScene implements Scene {
     const left = W < 620 ? 14 : (W - 620) / 2 + 14;
     ctx.textAlign = 'left';
     ctx.textBaseline = 'middle';
+    const title = "NICI'S PIXEL RUSH";
+    // Shrink the title on narrow screens so it never runs into the sound button.
     ctx.font = `900 24px ${FONT}`;
-    const title = 'PIXEL FLOW';
+    const room = this.buttons.sound.x - 10 - left;
+    const natural = ctx.measureText(title).width + title.length;
+    ctx.font = `900 ${Math.max(14, Math.min(24, Math.floor((24 * room) / natural)))}px ${FONT}`;
     const colors = ['#ff4d5e', '#ff9f1c', '#ffd93d', '#5bd75b', '#2ec4f1', '#3a6df0', '#9b5de5', '#ff70c8'];
     let x = left;
     ctx.lineWidth = 5;
