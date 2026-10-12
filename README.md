@@ -39,8 +39,11 @@ Die Biome werden in gemischten Runden ausgeteilt (`src/world.ts`): Jedes Thema k
 1. **Bild:** Ein Motiv aus dem Thema des Bioms wird auf die Levelgröße skaliert, eventuell gespiegelt und auf einen gemusterten Hintergrund in Themenfarben gesetzt. In frühen Leveln bleibt der Hintergrund leer. Kunst-Biome nutzen prozedurale Muster.
 2. **Shooter:** Das Bild wird virtuell von außen nach innen „abgeschält“. Daraus entsteht eine natürliche Lösungsreihenfolge, die leicht gemischt und auf die Spalten verteilt wird. Die Munition pro Farbe entspricht exakt der Pixelanzahl.
 3. **Lösbarkeit:** Ein Bot (`src/solver.ts`) spielt jedes Level mit derselben Spiellogik durch. Nur Level, die er schafft, werden ausgegeben.
+4. **Schwierigkeit:** Der Generator dreht einen Härte-Regler von gnädig bis hart. Dabei werden die Warteplätze knapper (5 → 2), das Band kürzer (5 → 3), die Reihenfolge stärker gemischt, und es gibt weniger, aber größere Shooter. Jeden lösbaren Kandidaten spielt ein blind tippender Zufallsspieler 40-mal. Genommen wird der Kandidat, dessen Gewinnrate am nächsten am Ziel für dieses Level liegt.
 
-Der Schwierigkeitsgrad steigt mit dem Level (Bildgröße bis 24×24, mehr Hintergrundfarben, bis zu 4 Spalten, stärker gemischte Reihenfolge) und bleibt dann auf hohem Niveau. Der Fortschritt wird im Browser gespeichert; mit `?level=42` lässt sich ein Level direkt öffnen.
+Die Zielkurve (`targetWinRate`) ist ein Sägezahn: Innerhalb eines Bioms wird es schwerer, Level 6 ist eine kurze Verschnaufpause, und der Boss 👑 ist der Höhepunkt. Jedes neue Biom startet etwas leichter als der letzte Boss, aber härter als das Biom davor. Das geht von ~95 % Zufallsgewinnrate in Level 1 über ~50 % beim ersten Boss bis auf ~15–30 % ab Level 40. Bildgröße (bis 24×24), Farben und Spalten (bis 4) wachsen zusätzlich mit.
+
+Der Fortschritt wird im Browser gespeichert; mit `?level=42` lässt sich ein Level direkt öffnen.
 
 ## Tech-Stack
 

@@ -1,8 +1,8 @@
 import { EMPTY, LevelDef, ShooterDef, exposedMask } from './game';
 import { Rng, hashSeed } from './rng';
-import { botPlay } from './solver';
+import { botPlay, randomWinRate } from './solver';
 import { Sprite, Theme } from './themes';
-import { biomeOfLevel } from './world';
+import { LEVELS_PER_BIOME, biomeOfLevel, isBossLevel } from './world';
 
 /** Vivid, clearly distinguishable block colors. */
 export const COLORS = [
@@ -23,13 +23,27 @@ export interface LevelParams {
   height: number;
   colors: number;
   columns: number;
-  slots: number;
-  beltCapacity: number;
-  /** 0..1, how much the queue order deviates from the "natural" clearing order. */
-  shuffle: number;
+  /** Target share of blind random playthroughs that should win (see `randomWinRate`). */
+  target: number;
+  /** Upper bound for the hardness knob (0..1), so early levels never get harsh rules. */
+  maxHardness: number;
 }
 
-/** Difficulty curve. Grows quickly at first, then plateaus so levels stay playable forever. */
+/**
+ * Target random-win rate for a level: a sawtooth that falls within each biome, gives a breather
+ * mid-biome, spikes at the boss and restarts each biome a bit lower than the one before.
+ */
+export function targetWinRate(level: number): number {
+  const n = Math.max(1, Math.floor(level));
+  const b = Math.floor((n - 1) / LEVELS_PER_BIOME);
+  const p = (n - 1) % LEVELS_PER_BIOME;
+  const start = Math.max(0.3, 0.95 - 0.17 * b);
+  if (isBossLevel(n)) return start * 0.5;
+  if (p === 5) return start * 0.9; // breather
+  return start * (1 - 0.4 * (p / (LEVELS_PER_BIOME - 2)));
+}
+
+/** Difficulty curve. Image size and colors grow, then plateau; the rest is tuned per level. */
 export function levelParams(level: number): LevelParams {
   const n = Math.max(1, Math.floor(level));
   const size = Math.min(10 + Math.floor((n - 1) / 3), 24);
@@ -38,11 +52,35 @@ export function levelParams(level: number): LevelParams {
     height: size,
     colors: Math.min(3 + Math.floor((n - 1) / 4), 7),
     columns: n < 3 ? 2 : n < 10 ? 3 : 4,
-    slots: 5,
-    beltCapacity: 5,
-    shuffle: Math.min(0.08 + n * 0.015, 0.45),
+    target: targetWinRate(n),
+    maxHardness: Math.min(1, 0.4 + 0.06 * (n - 1)),
   };
 }
+
+/** Rules and queue layout for a hardness value t in 0..1 (0 = most forgiving). */
+interface Knobs {
+  slots: number;
+  beltCapacity: number;
+  /** Chance per shooter to be moved away from its natural position. */
+  shuffle: number;
+  /** How far (in queue positions) a shooter may be moved. */
+  reach: number;
+  /** Scales the ammo per shooter: bigger shooters block a waiting slot for longer. */
+  chunk: number;
+}
+
+function knobs(t: number): Knobs {
+  return {
+    slots: Math.round(5 - 3 * t),
+    beltCapacity: Math.round(5 - 2 * t),
+    shuffle: 0.1 + 0.7 * t,
+    reach: 1 + Math.round(4 * t),
+    chunk: 1 + 0.8 * t,
+  };
+}
+
+/** Hardness steps the generator tries, from forgiving to harsh. */
+const HARDNESS_STEPS = 11;
 
 // ---------------------------------------------------------------------------------------------
 // Image generators. Each returns a w*h grid filled with color indices 0..k-1.
@@ -287,11 +325,11 @@ export function generateImage(w: number, h: number, k: number, rng: Rng): { grid
  * that is currently reachable and remove a chunk of it. Following this sequence is a natural
  * way to solve the level, which keeps generated levels fair.
  */
-function peelSequence(grid: Int8Array, w: number, h: number, colors: number, rng: Rng): ShooterDef[] {
+function peelSequence(grid: Int8Array, w: number, h: number, colors: number, chunk: number, rng: Rng): ShooterDef[] {
   const g = Int8Array.from(grid);
   let total = 0;
   for (const c of g) if (c !== EMPTY) total++;
-  const avgChunk = Math.max(5, Math.round(total / (colors * rng.range(2.2, 3.4)) / 5) * 5);
+  const avgChunk = Math.max(5, Math.round((chunk * total) / (colors * rng.range(2.2, 3.4)) / 5) * 5);
   const seq: ShooterDef[] = [];
 
   while (total > 0) {
@@ -341,12 +379,12 @@ function peelSequence(grid: Int8Array, w: number, h: number, colors: number, rng
   return seq;
 }
 
-/** Light shuffling so the natural order isn't always the obvious one. */
-function perturb(seq: ShooterDef[], amount: number, rng: Rng): ShooterDef[] {
+/** Moves shooters up to `reach` positions away from the natural order, so it isn't the obvious one. */
+function perturb(seq: ShooterDef[], amount: number, reach: number, rng: Rng): ShooterDef[] {
   const out = seq.map((s) => ({ ...s }));
   for (let i = 0; i < out.length - 1; i++) {
     if (rng.chance(amount)) {
-      const j = Math.min(out.length - 1, i + rng.int(1, 2));
+      const j = Math.min(out.length - 1, i + rng.int(1, reach));
       [out[i], out[j]] = [out[j], out[i]];
     }
   }
@@ -464,21 +502,30 @@ function makeImage(level: number, params: LevelParams, rng: Rng, attempt: number
 
 const cache = new Map<number, LevelDef>();
 
-/** Deterministically generates level `level` (1-based). Levels count up forever. */
+/**
+ * Deterministically generates level `level` (1-based). Levels count up forever.
+ *
+ * For each image the generator walks the hardness knob from forgiving to harsh, keeps only
+ * candidates the greedy bot can beat (so every level stays fair) and picks the one whose random
+ * win rate is closest to the level's target.
+ */
 export function generateLevel(level: number): LevelDef {
   const cached = cache.get(level);
   if (cached) return cached;
   const params = levelParams(level);
   const rng = new Rng(hashSeed(level, 0x9e3779b9));
 
+  let best: { def: LevelDef; error: number } | null = null;
+  const close = () => best !== null && best.error < 0.06;
   let fallback: LevelDef | null = null;
-  for (let attempt = 0; attempt < 4; attempt++) {
+  for (let attempt = 0; attempt < 3 && !close(); attempt++) {
     const { width, height, grid, palette, title } = makeImage(level, params, rng, attempt);
     const colors = palette.length;
-    const seq = peelSequence(grid, width, height, colors, rng);
 
-    for (let arrangement = 0; arrangement < 4; arrangement++) {
-      const shuffle = params.shuffle * (1 - arrangement / 4);
+    let overshoots = 0;
+    for (let step = 0; step < HARDNESS_STEPS && !close() && overshoots < 2; step++) {
+      const k = knobs((params.maxHardness * step) / (HARDNESS_STEPS - 1));
+      const seq = peelSequence(grid, width, height, colors, k.chunk, rng);
       const def: LevelDef = {
         level,
         title,
@@ -486,16 +533,22 @@ export function generateLevel(level: number): LevelDef {
         height,
         palette,
         grid,
-        columns: distribute(perturb(seq, shuffle, rng), params.columns, rng),
-        slots: params.slots,
-        beltCapacity: params.beltCapacity,
+        columns: distribute(perturb(seq, k.shuffle, k.reach, rng), params.columns, rng),
+        slots: k.slots,
+        beltCapacity: k.beltCapacity,
       };
-      if (botPlay(def).won) {
-        cache.set(level, def);
-        return def;
-      }
-      fallback ??= { ...def, columns: distribute(seq, params.columns, rng) };
+      fallback ??= { ...def, columns: distribute(seq, params.columns, rng), slots: 5, beltCapacity: 5 };
+      if (!botPlay(def).won) continue;
+      const rate = randomWinRate(def);
+      const error = Math.abs(rate - params.target);
+      if (!best || error < best.error) best = { def, error };
+      // Clearly past the target: further (harder) steps only move away from it.
+      if (rate < params.target - 0.1) overshoots++;
     }
+  }
+  if (best) {
+    cache.set(level, best.def);
+    return best.def;
   }
 
   // Extremely rare: give the player extra waiting slots until the bot can solve it.
