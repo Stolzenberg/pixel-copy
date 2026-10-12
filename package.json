@@ -1,8 +1,8 @@
 {
-  "name": "pixel-flow-web",
+  "name": "nicis-pixel-rush",
   "private": true,
   "version": "1.0.0",
-  "description": "Browser-Variante des Mobile Games Pixel Flow mit unendlich vielen, prozedural generierten Leveln.",
+  "description": "Nici's Pixel Rush: Browser-Spiel nach dem Vorbild von Pixel Flow mit unendlich vielen, prozedural generierten Leveln.",
   "type": "module",
   "scripts": {
     "dev": "vite",

@@ -1,4 +1,5 @@
 import { Game, LevelDef, Shooter, exposedCounts } from './game';
+import { Rng, hashSeed } from './rng';
 
 /**
  * A simple greedy bot used by the level generator to make sure each generated level
@@ -56,4 +57,39 @@ export function botPlay(def: LevelDef, maxTicks = 40000): BotResult {
     game.events.length = 0;
   }
   return { won: game.status === 'won', ticks: game.ticks };
+}
+
+/**
+ * One playthrough by a player who taps blindly: whenever there is room on the belt it sometimes
+ * launches a random queue front or parked shooter. Used to measure how forgiving a level is.
+ */
+function randomPlay(def: LevelDef, rng: Rng, maxTicks: number): boolean {
+  const game = new Game(def);
+  const options: { slot: boolean; index: number }[] = [];
+  while (game.status === 'playing' && game.ticks < maxTicks) {
+    if (game.canLaunch() && rng.chance(0.3)) {
+      options.length = 0;
+      game.queues.forEach((q, index) => q.length && options.push({ slot: false, index }));
+      game.slots.forEach((s, index) => s && options.push({ slot: true, index }));
+      if (options.length) {
+        const o = rng.pick(options);
+        if (o.slot) game.launchFromSlot(o.index);
+        else game.launchFromQueue(o.index);
+      }
+    }
+    game.tick();
+    game.events.length = 0;
+  }
+  return game.status === 'won';
+}
+
+/**
+ * Share of blind random playthroughs that win (0..1). This is the generator's difficulty
+ * measure: 1 means you cannot lose, small values mean every tap has to be planned.
+ */
+export function randomWinRate(def: LevelDef, plays = 40, seed = 1): number {
+  const rng = new Rng(hashSeed(def.level, seed));
+  let wins = 0;
+  for (let i = 0; i < plays; i++) if (randomPlay(def, rng, 8000)) wins++;
+  return wins / plays;
 }
